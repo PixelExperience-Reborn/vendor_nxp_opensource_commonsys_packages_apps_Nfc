@@ -1,0 +1,63 @@
+name: AOSP17 NFC Mainline versus legacy NXP app
+
+on:
+  push:
+    branches:
+      - audit/a17-nxp-nfc-app-mainline-20261107
+    paths:
+      - 'audit/check_nxp_nfc_app_mainline.py'
+      - 'docs/ANDROID_17_NXP_NFC_APP_MAINLINE_AUDIT.md'
+      - '.github/workflows/a17-nxp-nfc-app-mainline.yml'
+  pull_request:
+    paths:
+      - 'audit/check_nxp_nfc_app_mainline.py'
+      - 'docs/ANDROID_17_NXP_NFC_APP_MAINLINE_AUDIT.md'
+      - '.github/workflows/a17-nxp-nfc-app-mainline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  nfc-app-source-ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout legacy NXP source and audit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Fetch immutable historical app ref
+        run: |
+          git fetch -q --no-tags --depth=1 origin \
+            +refs/heads/seventeen:refs/remotes/origin/seventeen
+      - name: Fetch official Android17 NFC release and November security revision
+        run: |
+          git init -q "$RUNNER_TEMP/aosp17-nfc"
+          git -C "$RUNNER_TEMP/aosp17-nfc" remote add origin \
+            https://android.googlesource.com/platform/packages/modules/Nfc
+          git -C "$RUNNER_TEMP/aosp17-nfc" fetch -q --no-tags \
+            --filter=blob:none --depth=1 origin \
+            refs/tags/android-17.0.0_r1:refs/tags/android-17.0.0_r1 \
+            refs/tags/android-security-17.0.0_r3:refs/tags/android-security-17.0.0_r3
+      - name: Fetch current PE-Reborn manifest
+        run: |
+          git clone -q --depth=1 \
+            --branch port/a17-aosp17-manifest-20261102 \
+            https://github.com/PixelExperience-Reborn/manifest.git \
+            "$RUNNER_TEMP/manifest"
+      - name: Source contracts, security-release delta and manifest gates
+        run: |
+          python3 audit/check_nxp_nfc_app_mainline.py \
+            "$GITHUB_WORKSPACE" "$RUNNER_TEMP/aosp17-nfc" \
+            "$RUNNER_TEMP/manifest"
+      - name: Positive and adversarial Android17 source graph tests
+        run: |
+          cd "$RUNNER_TEMP/manifest"
+          python3 -m unittest discover -s tools \
+            -p test_aosp17_manifest_entrypoint.py -v
+      - name: Explicit verification limits
+        run: |
+          echo "SOURCE ONLY: archived NXP app, exact AOSP17 Mainline and security tag."
+          echo "NOT TESTED: NFC Java/Soong/APEX build, CTS/VTS, HCE, SE/UICC,"
+          echo "vendor ABI, Android17 security platform rebase or mondrian."
