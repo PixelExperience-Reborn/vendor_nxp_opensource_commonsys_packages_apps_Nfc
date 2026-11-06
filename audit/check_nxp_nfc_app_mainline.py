@@ -164,6 +164,16 @@ def manifest_boundary(root):
     require(LEGACY_PATH not in owners and LEGACY_NAME not in owners.values(),
             "unreviewed NXP NFC APK source activated")
 
+    # Additional source-only NFC security stage may be evaluated, but
+    # it must not replace the reviewed default AOSP17 r1 source graph.
+    candidate = ET.parse(
+        root / "aosp17_pe_p2_nfc_security_candidate.xml").getroot()
+    candidate_nfc = [p for p in candidate.findall("project")
+                     if p.get("path") == "packages/modules/Nfc"]
+    require(len(candidate_nfc) == 1
+            and candidate_nfc[0].get("name") == "platform/packages/modules/Nfc"
+            and candidate_nfc[0].get("revision") == SEC_R3,
+            "experimental NFC security candidate absent or not pinned")
     validator = (root / "tools/validate_aosp17_base_profiles.py").read_text()
     tests = (root / "tools/test_aosp17_manifest_entrypoint.py").read_text()
     require(f'if "{LEGACY_PATH}" in projects:' in validator,
