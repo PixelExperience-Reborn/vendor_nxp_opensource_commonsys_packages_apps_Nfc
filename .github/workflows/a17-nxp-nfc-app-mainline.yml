@@ -1,0 +1,102 @@
+name: AOSP17 NFC Mainline versus legacy NXP app
+
+on:
+  push:
+    branches:
+      - audit/a17-nxp-nfc-app-mainline-20261107
+    paths:
+      - 'audit/check_nxp_nfc_app_mainline.py'
+      - 'docs/ANDROID_17_NXP_NFC_APP_MAINLINE_AUDIT.md'
+      - '.github/workflows/a17-nxp-nfc-app-mainline.yml'
+  pull_request:
+    paths:
+      - 'audit/check_nxp_nfc_app_mainline.py'
+      - 'docs/ANDROID_17_NXP_NFC_APP_MAINLINE_AUDIT.md'
+      - '.github/workflows/a17-nxp-nfc-app-mainline.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  nfc-app-source-ownership:
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    steps:
+      - name: Checkout legacy NXP source and audit
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+      - name: Fetch immutable historical app ref
+        run: |
+          git fetch -q --no-tags --depth=1 origin \
+            +refs/heads/seventeen:refs/remotes/origin/seventeen
+      - name: Fetch official Android17 NFC release and November security revision
+        run: |
+          git init -q "$RUNNER_TEMP/aosp17-nfc"
+          git -C "$RUNNER_TEMP/aosp17-nfc" remote add origin \
+            https://android.googlesource.com/platform/packages/modules/Nfc
+          git -C "$RUNNER_TEMP/aosp17-nfc" fetch -q --no-tags \
+            --filter=blob:none --depth=1 origin \
+            refs/tags/android-17.0.0_r1:refs/tags/android-17.0.0_r1 \
+            refs/tags/android-security-17.0.0_r3:refs/tags/android-security-17.0.0_r3
+      - name: Fetch current PE-Reborn manifest
+        run: |
+          git clone -q --depth=1 \
+            --branch port/a17-aosp17-manifest-20261102 \
+            https://github.com/PixelExperience-Reborn/manifest.git \
+            "$RUNNER_TEMP/manifest"
+      - name: Source contracts, security-release delta and manifest gates
+        run: |
+          python3 audit/check_nxp_nfc_app_mainline.py \
+            "$GITHUB_WORKSPACE" "$RUNNER_TEMP/aosp17-nfc" \
+            "$RUNNER_TEMP/manifest"
+      - name: Positive and adversarial Android17 source graph tests
+        run: |
+          cd "$RUNNER_TEMP/manifest"
+          python3 -m unittest discover -s tools \
+            -p test_aosp17_manifest_entrypoint.py -v
+      - name: Resolve the experimental newer NFC profile via official repo
+        run: |
+          set -euo pipefail
+          curl -fLsS --retry 4 https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$RUNNER_TEMP/repo"
+          chmod +x "$RUNNER_TEMP/repo"
+          mkdir -p "$RUNNER_TEMP/nfc-candidate-graph"
+          cd "$RUNNER_TEMP/nfc-candidate-graph"
+          "$RUNNER_TEMP/repo" init -q --no-clone-bundle --partial-clone \
+            --clone-filter=blob:none \
+            -u https://github.com/PixelExperience-Reborn/manifest.git \
+            -b port/a17-aosp17-manifest-20261102 \
+            -m aosp17_pe_p2_nfc_security_candidate.xml
+          "$RUNNER_TEMP/repo" manifest -o "$RUNNER_TEMP/nfc-candidate.xml"
+          python3 - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+          root=ET.parse(Path(os.environ["RUNNER_TEMP"])/"nfc-candidate.xml").getroot()
+          elements=root.findall(".//project")
+          project={p.get("path") or p.get("name"):p for p in elements}
+          assert len(project)==len(elements)==1069, (len(project),len(elements))
+          nfc=project["packages/modules/Nfc"]
+          assert nfc.get("name")=="platform/packages/modules/Nfc"
+          assert nfc.get("revision")=="6f3a074cf6c87a2dcc3970c03462a6970b06f9cd"
+          assert nfc.get("groups")=="pdk-cw-fs,pdk-fs"
+          assert project["hardware/nxp/nfc"].get("name")=="platform/hardware/nxp/nfc"
+          assert project["system/secure_element"].get("name")=="platform/system/secure_element"
+          assert not any(p.startswith("vendor/nxp/") for p in project)
+          print("PASS: official repo resolves newer NFC candidate without duplicate paths")
+          print("PASS: NFC HAL/secure_element remain official Android17 owners")
+          PY
+          "$RUNNER_TEMP/repo" sync -c -j2 --no-tags --fail-fast packages/modules/Nfc
+          cd packages/modules/Nfc
+          test "$(git rev-parse HEAD)" = "6f3a074cf6c87a2dcc3970c03462a6970b06f9cd"
+          test "$(git rev-parse 'HEAD^{tree}')" = "ee6a57f5ccc30d113588f6cc5bffff94932bffb5"
+          echo "PASS: official repo synced exact newer NFC candidate Git tree"
+          echo "NOT TESTED: complete November NFC security patch status or Android17 build"
+
+      - name: Explicit verification limits
+        run: |
+          echo "SOURCE ONLY: archived NXP app, exact AOSP17 Mainline and security tag."
+          echo "NOT TESTED: NFC Java/Soong/APEX build, CTS/VTS, HCE, SE/UICC,"
+          echo "vendor ABI, Android17 security platform rebase or mondrian."
